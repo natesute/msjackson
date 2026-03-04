@@ -1,4 +1,4 @@
-import { StrudelMirror, initEditor, compartments, extensions, addWidget, setSliderWidgets, updateMiniLocations } from '@strudel/codemirror';
+import { StrudelMirror, initEditor, compartments, extensions, addWidget, setSliderWidgets, updateMiniLocations, registerWidget, setWidget } from '@strudel/codemirror';
 import {
   getAudioContext,
   webaudioOutput,
@@ -7,12 +7,578 @@ import {
   samples,
 } from '@strudel/webaudio';
 import { transpiler } from '@strudel/transpiler';
-import { evalScope } from '@strudel/core';
+import { evalScope, getFrequency, freqToMidi, midiToFreq } from '@strudel/core';
 import { toggleLineComment } from '@codemirror/commands';
 import { Prec, StateField, StateEffect } from '@codemirror/state';
 import { EditorView, Decoration } from '@codemirror/view';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
+
+/* ── Canvas helper (replicates widget.mjs:96-105, not exported) ── */
+function getCanvasWidget(id, options = {}) {
+  const { width = 500, height = 60, pixelRatio = window.devicePixelRatio } = options;
+  let canvas = document.getElementById(id) || document.createElement('canvas');
+  canvas.width = width * pixelRatio;
+  canvas.height = height * pixelRatio;
+  canvas.style.width = width + 'px';
+  canvas.style.height = height + 'px';
+  setWidget(id, canvas);
+  return canvas;
+}
+
+/* ── Widget 1: _lissajous — Interval Geometry ──────────── */
+// Consonant intervals draw clean closed curves (3:2 = fifth, 5:4 = third).
+// Dissonance → chaotic open curves. This IS consonance, seen in 2D.
+registerWidget('_lissajous', (id, options = {}, pat) => {
+  const size = options.size || 200;
+  options = { width: size, height: size, ...options };
+  const canvas = getCanvasWidget(id, options);
+  const ctx = canvas.getContext('2d');
+
+  return pat.tag(id).onPaint((_, time, haps, drawTime) => {
+    const active = haps.filter(h => h.hasTag(id) && h.isActive(time));
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const freqs = [];
+    for (const hap of active) {
+      try { freqs.push(getFrequency(hap)); } catch (_) {}
+    }
+
+    if (freqs.length < 2) {
+      if (freqs.length === 1) {
+        ctx.strokeStyle = 'rgba(255, 0, 255, 0.4)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        const r = w * 0.35;
+        const phi = time * 0.3;
+        for (let i = 0; i <= 500; i++) {
+          const t = (i / 500) * Math.PI * 2;
+          const x = w / 2 + r * Math.sin(t + phi);
+          const y = h / 2 + r * Math.sin(t);
+          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      return;
+    }
+
+    freqs.sort((a, b) => a - b);
+    const base = freqs[0];
+    const phi = time * 0.3;
+    const r = w * 0.35;
+    const cx = w / 2, cy = h / 2;
+
+    for (let fi = 1; fi < freqs.length; fi++) {
+      const ratio = freqs[fi] / base;
+      const alpha = 0.4 + 0.5 / freqs.length;
+      const hue = (fi * 60 + 300) % 360;
+      ctx.strokeStyle = `hsla(${hue}, 80%, 65%, ${alpha})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i <= 500; i++) {
+        const t = (i / 500) * Math.PI * 2;
+        const x = cx + r * Math.sin(t + phi);
+        const y = cy + r * Math.sin(ratio * t);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  });
+});
+
+/* ── Widget 2: _orbit — Rhythm Circle ──────────────────── */
+// Rhythm as geometry on a circle. Symmetric rhythms form regular polygons.
+// Asymmetric patterns show groove as geometric irregularity.
+registerWidget('_orbit', (id, options = {}, pat) => {
+  const size = options.size || 150;
+  options = { width: size, height: size, ...options };
+  const canvas = getCanvasWidget(id, options);
+  const ctx = canvas.getContext('2d');
+
+  return pat.tag(id).onPaint((_, time, haps, drawTime) => {
+    const w = canvas.width, h = canvas.height;
+    const cx = w / 2, cy = h / 2;
+    const radius = Math.min(w, h) * 0.4;
+    ctx.clearRect(0, 0, w, h);
+
+    // Outer ring
+    ctx.strokeStyle = 'rgba(255, 60, 60, 0.3)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Rotating cursor
+    const cursorAngle = (time % 1) * Math.PI * 2 - Math.PI / 2;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + radius * Math.cos(cursorAngle), cy + radius * Math.sin(cursorAngle));
+    ctx.stroke();
+
+    // Cursor tip
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.beginPath();
+    ctx.arc(cx + radius * Math.cos(cursorAngle), cy + radius * Math.sin(cursorAngle), 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Beat dots
+    const tagged = haps.filter(h => h.hasTag(id));
+    for (const hap of tagged) {
+      if (!hap.whole) continue;
+      const onset = hap.whole.begin % 1;
+      const angle = onset * Math.PI * 2 - Math.PI / 2;
+      const x = cx + radius * Math.cos(angle);
+      const y = cy + radius * Math.sin(angle);
+      const isActive = hap.isActive(time);
+
+      if (isActive) {
+        ctx.fillStyle = 'rgba(255, 80, 80, 0.3)';
+        ctx.beginPath();
+        ctx.arc(x, y, 12, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.fillStyle = isActive ? '#ff4444' : 'rgba(255, 80, 80, 0.6)';
+      ctx.beginPath();
+      ctx.arc(x, y, isActive ? 7 : 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+});
+
+/* ── Widget 3: _tonnetz — Harmonic Lattice ─────────────── */
+// x-axis = fifths (7 semitones), y-axis = major thirds (4 semitones).
+// Major triads = upward triangles, minor = downward. This is the topology of harmony.
+registerWidget('_tonnetz', (id, options = {}, pat) => {
+  const size = options.size || 250;
+  options = { width: size, height: size, ...options };
+  const canvas = getCanvasWidget(id, options);
+  const ctx = canvas.getContext('2d');
+
+  const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  const lattice = [];
+  const pcToPositions = new Map();
+
+  for (let gx = -3; gx <= 3; gx++) {
+    for (let gy = -2; gy <= 2; gy++) {
+      const pc = ((7 * gx + 4 * gy) % 12 + 12) % 12;
+      const node = { gx, gy, pc };
+      lattice.push(node);
+      if (!pcToPositions.has(pc)) pcToPositions.set(pc, []);
+      pcToPositions.get(pc).push(node);
+    }
+  }
+
+  return pat.tag(id).onPaint((_, time, haps, drawTime) => {
+    const active = haps.filter(h => h.hasTag(id) && h.isActive(time));
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const activePCs = new Set();
+    for (const hap of active) {
+      try {
+        const freq = getFrequency(hap);
+        const midi = Math.round(freqToMidi(freq));
+        activePCs.add(((midi % 12) + 12) % 12);
+      } catch (_) {}
+    }
+
+    const spacingX = w / 8;
+    const spacingY = h / 6;
+    const ox = w / 2, oy = h / 2;
+
+    // Grid connections (fifths horizontal, thirds vertical, diagonal)
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+    ctx.lineWidth = 1;
+    for (const p of lattice) {
+      const px = ox + p.gx * spacingX;
+      const py = oy - p.gy * spacingY;
+      if (p.gx < 3) {
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(ox + (p.gx + 1) * spacingX, py);
+        ctx.stroke();
+      }
+      if (p.gy < 2) {
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(px, oy - (p.gy + 1) * spacingY);
+        ctx.stroke();
+      }
+      if (p.gx < 3 && p.gy > -2) {
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(ox + (p.gx + 1) * spacingX, oy - (p.gy - 1) * spacingY);
+        ctx.stroke();
+      }
+    }
+
+    // Draw triangles for active triads
+    if (activePCs.size >= 3) {
+      const pcArray = [...activePCs];
+      for (let i = 0; i < pcArray.length - 2; i++) {
+        for (let j = i + 1; j < pcArray.length - 1; j++) {
+          for (let k = j + 1; k < pcArray.length; k++) {
+            const trio = [pcArray[i], pcArray[j], pcArray[k]];
+            const sets = trio.map(pc => pcToPositions.get(pc) || []);
+            for (const a of sets[0]) {
+              for (const b of sets[1]) {
+                for (const c of sets[2]) {
+                  const maxDist = Math.max(
+                    Math.abs(a.gx - b.gx) + Math.abs(a.gy - b.gy),
+                    Math.abs(b.gx - c.gx) + Math.abs(b.gy - c.gy),
+                    Math.abs(a.gx - c.gx) + Math.abs(a.gy - c.gy)
+                  );
+                  if (maxDist <= 2) {
+                    ctx.fillStyle = 'rgba(180, 120, 255, 0.12)';
+                    ctx.beginPath();
+                    ctx.moveTo(ox + a.gx * spacingX, oy - a.gy * spacingY);
+                    ctx.lineTo(ox + b.gx * spacingX, oy - b.gy * spacingY);
+                    ctx.lineTo(ox + c.gx * spacingX, oy - c.gy * spacingY);
+                    ctx.closePath();
+                    ctx.fill();
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Lattice dots
+    for (const p of lattice) {
+      const px = ox + p.gx * spacingX;
+      const py = oy - p.gy * spacingY;
+      const isActive = activePCs.has(p.pc);
+
+      if (isActive) {
+        ctx.fillStyle = 'rgba(180, 120, 255, 0.3)';
+        ctx.beginPath();
+        ctx.arc(px, py, 14, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.fillStyle = isActive ? '#bb88ff' : 'rgba(255, 255, 255, 0.15)';
+      ctx.beginPath();
+      ctx.arc(px, py, isActive ? 8 : 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (isActive) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        ctx.font = `${Math.round(w / 25)}px monospace`;
+        ctx.textAlign = 'center';
+        ctx.fillText(noteNames[p.pc], px, py - 12);
+      }
+    }
+  });
+});
+
+/* ── Widget 4: _cymatics — Chladni Vibration Patterns ──── */
+// Physical vibrating surfaces produce geometric nodal patterns.
+// Z(x,y) = cos(nπx)cos(mπy) - cos(mπx)cos(nπy), nodal lines where Z≈0.
+const _cymaticsCache = new Map();
+
+registerWidget('_cymatics', (id, options = {}, pat) => {
+  const size = options.size || 200;
+  options = { width: size, height: size, ...options };
+  const canvas = getCanvasWidget(id, options);
+  const ctx = canvas.getContext('2d');
+
+  return pat.tag(id).onPaint((_, time, haps, drawTime) => {
+    const active = haps.filter(h => h.hasTag(id) && h.isActive(time));
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    if (active.length === 0) return;
+
+    let midi = 60;
+    try {
+      const freq = getFrequency(active[0]);
+      midi = Math.round(freqToMidi(freq));
+    } catch (_) {}
+
+    const cacheKey = `${id}:${midi}`;
+    let cached = _cymaticsCache.get(cacheKey);
+
+    if (!cached || cached.w !== w || cached.h !== h) {
+      const n = Math.max(1, Math.min(8, 1 + (midi - 30) / 60 * 7));
+      const m = n + 1;
+      const imageData = ctx.createImageData(w, h);
+      const data = imageData.data;
+
+      for (let py = 0; py < h; py++) {
+        const yNorm = py / h;
+        const cosNY = Math.cos(n * Math.PI * yNorm);
+        const cosMY = Math.cos(m * Math.PI * yNorm);
+        for (let px = 0; px < w; px++) {
+          const xNorm = px / w;
+          const z = Math.cos(n * Math.PI * xNorm) * cosMY
+                  - Math.cos(m * Math.PI * xNorm) * cosNY;
+          const intensity = 1 - Math.min(1, Math.abs(z) * 4);
+          const brightness = intensity * intensity * intensity;
+          const idx = (py * w + px) * 4;
+          data[idx]     = (brightness * 100) | 0;
+          data[idx + 1] = (brightness * 200) | 0;
+          data[idx + 2] = (brightness * 255) | 0;
+          data[idx + 3] = (brightness * 255) | 0;
+        }
+      }
+
+      cached = { imageData, w, h };
+      _cymaticsCache.set(cacheKey, cached);
+    }
+
+    ctx.putImageData(cached.imageData, 0, 0);
+  });
+});
+
+/* ── Widget 5: _harmonics — Standing Waves ─────────────── */
+// Musical intervals ARE string divisions. Octave = halved. Fifth = 3:2.
+// y(x) = (A/√n) * sin(nπx) * cos(ωt) — fixed endpoints enforced by sin.
+registerWidget('_harmonics', (id, options = {}, pat) => {
+  options = { width: 500, height: 100, ...options };
+  const canvas = getCanvasWidget(id, options);
+  const ctx = canvas.getContext('2d');
+
+  return pat.tag(id).onPaint((_, time, haps, drawTime) => {
+    const active = haps.filter(h => h.hasTag(id) && h.isActive(time));
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const baseline = h / 2;
+
+    // Baseline string
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, baseline);
+    ctx.lineTo(w, baseline);
+    ctx.stroke();
+
+    // Fixed endpoints
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.beginPath();
+    ctx.arc(0, baseline, 3, 0, Math.PI * 2);
+    ctx.arc(w, baseline, 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (active.length === 0) return;
+
+    const omega = time * 4;
+
+    for (let hi = 0; hi < active.length; hi++) {
+      let midi = 60;
+      try {
+        const freq = getFrequency(active[hi]);
+        midi = freqToMidi(freq);
+      } catch (_) {}
+
+      const n = Math.max(1, Math.pow(2, (midi - 36) / 12));
+      const amplitude = (h * 0.35) / Math.sqrt(n);
+      const hue = (hi * 50 + 180) % 360;
+      ctx.strokeStyle = `hsla(${hue}, 70%, 60%, 0.7)`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+
+      for (let px = 0; px <= w; px++) {
+        const x = px / w;
+        const y = baseline + amplitude * Math.sin(n * Math.PI * x) * Math.cos(omega);
+        px === 0 ? ctx.moveTo(px, y) : ctx.lineTo(px, y);
+      }
+      ctx.stroke();
+    }
+  });
+});
+
+/* ── Widget 6: _helix — Pitch Helix ───────────────────── */
+// Pitch has two dimensions: height (frequency) and chroma (octave equivalence).
+// The true topology is a helix — notes an octave apart are vertically aligned.
+registerWidget('_helix', (id, options = {}, pat) => {
+  const size = options.size || 200;
+  const turns = options.turns || 5;
+  options = { width: size, height: size, ...options };
+  const canvas = getCanvasWidget(id, options);
+  const ctx = canvas.getContext('2d');
+  const rootFreq = 130.81; // C3
+
+  return pat.tag(id).onPaint((_, time, haps, drawTime) => {
+    const active = haps.filter(h => h.hasTag(id) && h.isActive(time));
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const cx = w / 2;
+    const radiusX = w * 0.3;
+    const totalHeight = h * 0.85;
+    const topMargin = h * 0.075;
+    const steps = turns * 60;
+
+    // Back half of helix (behind)
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i <= steps; i++) {
+      const frac = i / steps;
+      const angle = frac * turns * Math.PI * 2;
+      if (Math.sin(angle) > 0) { started = false; continue; }
+      const x = cx + radiusX * Math.cos(angle);
+      const y = topMargin + frac * totalHeight;
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Front half of helix
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    started = false;
+    for (let i = 0; i <= steps; i++) {
+      const frac = i / steps;
+      const angle = frac * turns * Math.PI * 2;
+      if (Math.sin(angle) <= 0) { started = false; continue; }
+      const x = cx + radiusX * Math.cos(angle);
+      const y = topMargin + frac * totalHeight;
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Plot active notes
+    for (const hap of active) {
+      try {
+        const freq = getFrequency(hap);
+        const octave = Math.log2(freq / rootFreq);
+        const frac = octave / turns;
+        if (frac < 0 || frac > 1) continue;
+
+        const angle = octave * Math.PI * 2;
+        const x = cx + radiusX * Math.cos(angle);
+        const y = topMargin + frac * totalHeight;
+
+        // Glow
+        const gradient = ctx.createRadialGradient(x, y, 0, x, y, 16);
+        gradient.addColorStop(0, 'rgba(100, 200, 255, 0.6)');
+        gradient.addColorStop(1, 'rgba(100, 200, 255, 0)');
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(x, y, 16, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#66ccff';
+        ctx.beginPath();
+        ctx.arc(x, y, 5, 0, Math.PI * 2);
+        ctx.fill();
+      } catch (_) {}
+    }
+  });
+});
+
+/* ── Widget 7: _epicycles — Fourier Spinning Circles ───── */
+// ALL sound is a sum of rotating circles (e^(iωt)). Each harmonic is a circle
+// spinning at its frequency. The tip traces the waveform. Same math as Ptolemy.
+registerWidget('_epicycles', (id, options = {}, pat) => {
+  const size = options.size || 200;
+  const harmonicsCount = options.harmonicsCount || 8;
+  options = { width: size * 2, height: size, ...options };
+  const canvas = getCanvasWidget(id, options);
+  const ctx = canvas.getContext('2d');
+  const trail = new Float32Array(200);
+  let trailIdx = 0;
+  let lastTrailTime = 0;
+
+  return pat.tag(id).onPaint((_, time, haps, drawTime) => {
+    const active = haps.filter(h => h.hasTag(id) && h.isActive(time));
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const circleArea = w / 2;
+    const epicenterX = circleArea * 0.45;
+    const epicenterY = h / 2;
+    const baseR = Math.min(circleArea, h) * 0.25;
+
+    let speed = 1;
+    if (active.length > 0) {
+      try {
+        const freq = getFrequency(active[0]);
+        const midi = freqToMidi(freq);
+        speed = 0.5 + (midi - 36) / 60;
+      } catch (_) {}
+    }
+
+    // Compute epicycle chain
+    let x = epicenterX, y = epicenterY;
+
+    for (let n = 1; n <= harmonicsCount; n++) {
+      const prevX = x, prevY = y;
+      const r = baseR * 2 / (n * Math.PI);
+      const sign = (n % 2 === 0) ? -1 : 1;
+      const angle = n * speed * time * Math.PI * 2;
+
+      x += r * Math.cos(sign * angle);
+      y += r * Math.sin(sign * angle);
+
+      // Circle
+      ctx.strokeStyle = `rgba(255, 180, 60, ${0.12 + 0.08 / n})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(prevX, prevY, r, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Radius
+      ctx.strokeStyle = `rgba(255, 200, 100, ${0.25 + 0.15 / n})`;
+      ctx.beginPath();
+      ctx.moveTo(prevX, prevY);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+    }
+
+    // Tip dot
+    ctx.fillStyle = '#ffcc44';
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Update trail
+    if (time - lastTrailTime > 0.016) {
+      trail[trailIdx % trail.length] = y;
+      trailIdx++;
+      lastTrailTime = time;
+    }
+
+    // Connecting line from tip to waveform
+    const waveStartX = circleArea;
+    ctx.strokeStyle = 'rgba(255, 200, 100, 0.3)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(waveStartX, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Waveform trail
+    const trailLen = trail.length;
+    const waveWidth = w - circleArea;
+    ctx.strokeStyle = 'rgba(255, 200, 100, 0.7)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let waveStarted = false;
+    for (let i = 0; i < trailLen; i++) {
+      const idx = ((trailIdx - 1 - i) % trailLen + trailLen) % trailLen;
+      const wy = trail[idx];
+      if (wy === 0 && !waveStarted) continue;
+      const wx = waveStartX + (i / trailLen) * waveWidth;
+      if (!waveStarted) { ctx.moveTo(wx, wy); waveStarted = true; }
+      else ctx.lineTo(wx, wy);
+    }
+    ctx.stroke();
+  });
+});
 
 const songCode = `setcpm(95/4)
 //all(x => x.scope({ color: '#ffffff22', thickness: 1, scale: 0.05 }))
@@ -35,7 +601,7 @@ $: stack(
   note("<[f4,a4,c5] [[f4,a4,c5]@5 [g4,b4,d5]@3] [a4,c5,e5] [g4,b4,d5]>")
     .sound("sawtooth").release(0.1).gain(.3).lpf(perlin.range(1100,1200).slow(4)).lpq(2).vib("4.5:.1").shape(.15).postgain(.5).room(0.8).size(5)
     .superimpose(x => x.add(note(-.12)).delay(".3:.12:.5"))
-).color("magenta")
+).color("magenta")._lissajous({ size: 200 })
 
 // STABS
 $: stack(
@@ -51,7 +617,7 @@ $: stack(
 ).sound("piano").clip(.5).release(.4).delay(".2:.15:.4").room(.3).size(5).color("white")
 
 // DRUMS
-$: s("bd").struct("t ~ ~ ~ ~ ~ ~ ~ ~ ~ t ~ ~ ~ ~ ~").bank("RolandTR909").gain(0.2).shape(0.4).release(1).room(.1).color("red")
+$: s("bd").struct("t ~ ~ ~ ~ ~ ~ ~ ~ ~ t ~ ~ ~ ~ ~").bank("RolandTR909").gain(0.2).shape(0.4).release(1).room(.1).color("red")._orbit({ size: 150 })
 $: s("sd").struct("~ ~ ~ ~ t ~ ~ ~ ~ ~ ~ ~ t ~ ~ ~").bank("RolandTR909").gain(0.5).room(.2).size(2).color("yellow")
 $: s("hh*8").gain("[.25 .35]*4").clip(sine.range(.04,.06).fast(2)).shape(.1).color("lime")`;
 
@@ -60,6 +626,21 @@ const editorsContainer = document.getElementById('editors-container');
 const secondaryEditors = [];
 let chunkOffsets = [0]; // character offset of each chunk in combined code
 let lastEvalCode = ''; // last evaluated combined code, for location analysis
+
+/* ── Live file sync ─────────────────────────────────────── */
+let syncEnabled = false;
+let saveTimeout = null;
+let suppressNextUpdate = false;
+
+function debouncedSave() {
+  if (!syncEnabled || suppressNextUpdate) return;
+  clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => {
+    const code = getAllCode();
+    import.meta.hot?.send('strudel:save', { code });
+    localStorage.setItem('strudel_code', code);
+  }, 500);
+}
 
 /* ── Secondary editor highlight decorations ────────────── */
 const setSecHighlights = StateEffect.define();
@@ -167,7 +748,7 @@ const editor = new StrudelMirror({
   defaultOutput: webaudioOutput,
   getTime: () => getAudioContext().currentTime,
   transpiler,
-  initialCode: songCode,
+  initialCode: localStorage.getItem('strudel_code') ?? songCode,
   drawTime: [-2, 2],
   prebake,
   onUpdateState: (state) => {
@@ -285,6 +866,30 @@ editor.editor.dispatch({
   ),
 });
 
+// Auto-save to localStorage + live sync on changes
+editor.editor.dispatch({
+  effects: StateEffect.appendConfig.of(
+    EditorView.updateListener.of((v) => {
+      if (v.docChanged) {
+        localStorage.setItem('strudel_code', v.state.doc.toString());
+        debouncedSave();
+      }
+    })
+  ),
+});
+
+/* ── HMR: receive external file changes ────────────────── */
+if (import.meta.hot) {
+  import.meta.hot.on('strudel:update', ({ code }) => {
+    if (code === getAllCode()) return;
+    suppressNextUpdate = true;
+    editor.setCode(code);
+    if (currentCols > 1) setColumnCount(currentCols); // re-split
+    localStorage.setItem('strudel_code', code);
+    queueMicrotask(() => { suppressNextUpdate = false; });
+  });
+}
+
 /* ── Word Wrap (Ctrl+W) ────────────────────────────────── */
 let wrapEnabled = true;
 
@@ -345,7 +950,7 @@ function createSecondaryEditor(initialCode = '') {
     initialCode,
     onEvaluate: () => evaluateAll(),
     onStop: () => editor.stop(),
-    onChange: () => {},
+    onChange: () => { debouncedSave(); },
   });
 
   view.dispatch({ effects: StateEffect.appendConfig.of([dirtyLineField, secHighlightField]) });
@@ -445,43 +1050,62 @@ function setColumnCount(n) {
   }
 }
 
-/* ── Ripples (overlay on #main, crosses columns) ──────── */
-const mainEl = document.getElementById('main');
-const rippleLayer = document.createElement('div');
-rippleLayer.id = 'ripple-layer';
-mainEl.appendChild(rippleLayer);
+/* ── Ripples (inside .cm-scroller, scroll naturally with text) ──── */
 
-function spawnRipple(x, y, color, gain) {
+function spawnRipple(scroller, x, y, color, gain) {
   const g = Math.max(0.1, Math.min(gain, 1.5));
-  const size = 80 + g * 220;
-  const border = 2 + g * 2;
-  const mainRect = mainEl.getBoundingClientRect();
+  const size = 30 + g * 80;
+  const border = 4 + g * 4;
 
   const ring = document.createElement('div');
   ring.className = 'ripple';
-  ring.style.left = (x - mainRect.left - size / 2) + 'px';
-  ring.style.top = (y - mainRect.top - size / 2) + 'px';
+  ring.style.left = (x - size / 2) + 'px';
+  ring.style.top = (y - size / 2) + 'px';
   ring.style.width = size + 'px';
   ring.style.height = size + 'px';
   ring.style.borderWidth = border + 'px';
   ring.style.color = color;
-  rippleLayer.appendChild(ring);
+  scroller.appendChild(ring);
   ring.addEventListener('animationend', () => ring.remove());
 }
 
-/** Resolve viewport coords for a hap location */
+/** Convert viewport coords to scroller-relative coords */
+function viewportToScroller(scroller, vx, vy) {
+  const rect = scroller.getBoundingClientRect();
+  return {
+    x: vx - rect.left + scroller.scrollLeft,
+    y: vy - rect.top + scroller.scrollTop,
+  };
+}
+
+/** Resolve scroller + scroller-relative center of a token */
 function resolveHapPosition(loc) {
   try {
-    const coords = editor.editor.coordsAtPos(loc.start);
-    if (coords) return { x: coords.left, y: coords.top };
+    const start = editor.editor.coordsAtPos(loc.start);
+    const end = editor.editor.coordsAtPos(loc.end);
+    if (start && end) {
+      const scroller = editor.editor.dom.querySelector('.cm-scroller');
+      const cx = (start.left + end.left) / 2;
+      const cy = (start.top + start.bottom) / 2;
+      const pos = viewportToScroller(scroller, cx, cy);
+      return { scroller, x: pos.x, y: pos.y };
+    }
   } catch (_) {}
   for (let i = 0; i < secondaryEditors.length; i++) {
     const off = chunkOffsets[i + 1] ?? Infinity;
-    const adjPos = loc.start - off;
-    if (adjPos < 0) continue;
+    const adjStart = loc.start - off;
+    const adjEnd = loc.end - off;
+    if (adjStart < 0) continue;
     try {
-      const coords = secondaryEditors[i].view.coordsAtPos(adjPos);
-      if (coords) return { x: coords.left, y: coords.top };
+      const start = secondaryEditors[i].view.coordsAtPos(adjStart);
+      const end = secondaryEditors[i].view.coordsAtPos(adjEnd);
+      if (start && end) {
+        const scroller = secondaryEditors[i].view.dom.querySelector('.cm-scroller');
+        const cx = (start.left + end.left) / 2;
+        const cy = (start.top + start.bottom) / 2;
+        const pos = viewportToScroller(scroller, cx, cy);
+        return { scroller, x: pos.x, y: pos.y };
+      }
     } catch (_) {}
   }
   return null;
@@ -571,11 +1195,8 @@ editor.highlight = function (haps, time) {
     currentIds.add(uid);
 
     if (!liveHaps.has(uid)) {
-      const resolved = resolveHapPosition(noteLoc);
-      if (!resolved) continue;
       liveHaps.set(uid, {
-        x: resolved.x,
-        y: resolved.y,
+        loc: noteLoc,
         color: hap.value?.color ?? 'white',
         gain: hap.value?.gain ?? 0.5,
         lastEmit: 0,
@@ -584,7 +1205,8 @@ editor.highlight = function (haps, time) {
 
     const e = liveHaps.get(uid);
     if (now - e.lastEmit >= RIPPLE_INTERVAL) {
-      spawnRipple(e.x, e.y, e.color, e.gain);
+      const pos = resolveHapPosition(e.loc);
+      if (pos) spawnRipple(pos.scroller, pos.x, pos.y, e.color, e.gain);
       e.lastEmit = now;
     }
   }
@@ -595,7 +1217,7 @@ editor.highlight = function (haps, time) {
 };
 
 /* ── Keyboard handler (all shortcuts) ───────────────────── */
-function onEditorKeydown(e) {
+async function onEditorKeydown(e) {
   const ctrl = e.ctrlKey || e.metaKey;
 
   const view = e.currentTarget.cmView?.view || editor.editor;
@@ -634,7 +1256,156 @@ function onEditorKeydown(e) {
     editor.stop();
     return;
   }
+
+  // Ctrl+S — save song
+  if (ctrl && e.key === 's') {
+    e.preventDefault();
+    saveSong();
+    return;
+  }
+
+  // Ctrl+O — open/load song
+  if (ctrl && e.key === 'o') {
+    e.preventDefault();
+    showSongBrowser();
+    return;
+  }
+
+  // Ctrl+N — new song
+  if (ctrl && e.key === 'n') {
+    e.preventDefault();
+    const code = getAllCode();
+    if (code.trim()) {
+      const choice = confirm('Save current song before creating a new one?');
+      if (choice) await saveSong();
+    }
+    loadSong('');
+    return;
+  }
+}
+
+/* ── Save / Load songs (file-backed via /api/songs) ──── */
+let currentSongName = null;
+
+function getAllCode() {
+  return [editor.code, ...secondaryEditors.map(e => e.view.state.doc.toString())].join('\n');
+}
+
+async function saveSong() {
+  const name = currentSongName || prompt('Song name:');
+  if (!name) return;
+  currentSongName = name;
+  localStorage.setItem('strudel_song_name', name);
+  await fetch(`/api/songs/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: getAllCode(),
+  });
+  // Activate sync for this file
+  syncEnabled = true;
+  import.meta.hot?.send('strudel:open', { name, code: getAllCode() });
+  infoEl.textContent = `saved "${name}"`;
+}
+
+function loadSong(code, name) {
+  while (secondaryEditors.length) secondaryEditors.pop().root.remove();
+  currentCols = 1;
+  editor.setCode(code);
+  localStorage.setItem('strudel_code', code);
+  if (name) {
+    currentSongName = name;
+    localStorage.setItem('strudel_song_name', name);
+    syncEnabled = true;
+    import.meta.hot?.send('strudel:open', { name, code });
+  } else {
+    currentSongName = null;
+    localStorage.removeItem('strudel_song_name');
+    syncEnabled = false;
+  }
+  closeSongBrowser();
+}
+
+async function deleteSong(name) {
+  await fetch(`/api/songs/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  showSongBrowser();
+}
+
+let songBrowserEl = null;
+
+async function showSongBrowser() {
+  closeSongBrowser();
+  const songs = await fetch('/api/songs').then(r => r.json());
+
+  const overlay = document.createElement('div');
+  overlay.id = 'song-browser';
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeSongBrowser(); });
+  overlay.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSongBrowser(); });
+
+  const panel = document.createElement('div');
+  panel.className = 'song-panel';
+
+  const title = document.createElement('div');
+  title.className = 'song-title';
+  title.textContent = songs.length ? 'saved songs' : 'no saved songs';
+  panel.appendChild(title);
+
+  for (const song of songs) {
+    const row = document.createElement('div');
+    row.className = 'song-row';
+
+    const label = document.createElement('span');
+    label.className = 'song-name';
+    label.textContent = song.name;
+    label.addEventListener('click', async () => {
+      const code = await fetch(`/api/songs/${encodeURIComponent(song.name)}`).then(r => r.text());
+      loadSong(code, song.name);
+    });
+
+    const date = document.createElement('span');
+    date.className = 'song-date';
+    date.textContent = new Date(song.mtime).toLocaleDateString();
+
+    const del = document.createElement('span');
+    del.className = 'song-delete';
+    del.textContent = '×';
+    del.addEventListener('click', (e) => { e.stopPropagation(); deleteSong(song.name); });
+
+    row.append(label, date, del);
+    panel.appendChild(row);
+  }
+
+  const newBtn = document.createElement('div');
+  newBtn.className = 'song-row song-new';
+  newBtn.textContent = '+ new';
+  newBtn.addEventListener('click', () => { loadSong(''); });
+  panel.appendChild(newBtn);
+
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  songBrowserEl = overlay;
+  overlay.focus();
+}
+
+function closeSongBrowser() {
+  if (songBrowserEl) { songBrowserEl.remove(); songBrowserEl = null; }
+  editor.editor.focus();
 }
 
 editor.editor.dom.addEventListener('keydown', onEditorKeydown);
 updateMode();
+
+/* ── Startup: restore last synced song from disk ────────── */
+(async () => {
+  const songName = localStorage.getItem('strudel_song_name') || 'ms jackson';
+  try {
+    const res = await fetch(`/api/songs/${encodeURIComponent(songName)}`);
+    if (res.ok) {
+      const code = await res.text();
+      currentSongName = songName;
+      localStorage.setItem('strudel_song_name', songName);
+      editor.setCode(code);
+      localStorage.setItem('strudel_code', code);
+      syncEnabled = true;
+      import.meta.hot?.send('strudel:open', { name: songName, code });
+    }
+  } catch (_) {}
+})();

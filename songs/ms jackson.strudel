@@ -1,0 +1,40 @@
+setcpm(95/4)
+//all(x => x.scope({ color: '#ffffff22', thickness: 1, scale: 0.05 }))
+// VOCAL
+$: note("<[~ ~ ~ a4 e5 d5 d5 d5 ~ e5 ~ ~ a5@4] [e5 ~ e5 ~ e5 ~ g5@3 f5 e5 ~ ~ ~ ~ ~] [d5 ~ e5 ~ d5 ~ e5 ~ d5 ~ e5 d5 ~ e5 a4 ~] [a4 ~ e5 ~ d5 ~ e5 ~ d5 ~ e5 d5 ~ e5 a4 ~]>")
+  .sound("sawtooth").gain(.8).clip(.7).release(.5).lpf(2100).room(.2).size(2).color("#ff8844").delay(.3)
+  ._spiral({ stretch: 0.5, size: 200, thickness: 30, steady: 0, fade: 0.001, colorizeInactive: 0 })
+// BASS
+$: stack(
+   note("<[f2 ~ ~ ~ ~ ~ f2 ~ ~ ~ f1 f2 ~ ~ ~ ~] [f2 ~ ~ ~ ~ ~ f2 ~ ~ ~ f2 g2 ~ ~ g2 ~] [a2 ~ ~ ~ ~ ~ a2 ~ ~ ~ a1 a2 ~ ~ a2 ~] [g2 ~ ~ ~ ~ ~ g2 ~ ~ ~ g1 g2 ~ ~ g2 ~]>")
+     .sound("sine").gain(.2).lpf(150).clip(.9).release(0.1),
+   note("<[f2 ~ ~ ~ ~ ~ f2 ~ ~ ~ f1 f2 ~ ~ ~ ~] [f2 ~ ~ ~ ~ ~ f2 ~ ~ ~ f2 g2 ~ ~ g2 ~] [a2 ~ ~ ~ ~ ~ a2 ~ ~ ~ a1 a2 ~ ~ a1 ~] [g2 ~ ~ ~ ~ ~ g2 ~ ~ ~ g1 g2 ~ ~ g2 ~]>")
+     .sound("square").gain(.2).lpf(sine.range(180,350).slow(8)).lpq(4).clip(.5).release(.1).shape(0.9).postgain(0.3)
+ ).color("dodgerblue")._scope()
+// ORGAN
+$: stack(
+  note("<[f4,a4,c5] [[f4,a4,c5]@5 [g4,b4,d5]@3] [a4,c5,e5] [g4,b4,d5]>")
+    .sound("sawtooth").release(0.1).gain(.3).lpf(perlin.range(1000,1100)).lpq(2).vib("5:.12").room(.4).size(4)
+    .superimpose(x => x.add(note(.08))),
+  note("<[f4,a4,c5] [[f4,a4,c5]@5 [g4,b4,d5]@3] [a4,c5,e5] [g4,b4,d5]>")
+    .sound("sawtooth").release(0.1).gain(.3).lpf(perlin.range(1100,1200).slow(4)).lpq(2).vib("4.5:.1").shape(.15).postgain(.5).room(0.8).size(5)
+    .superimpose(x => x.add(note(-.12)).delay(".3:.12:.5"))
+).color("magenta")._lissajous({ size: 200 })
+
+// STABS
+$: stack(
+  note("<[[f4,a4,c5] ~@15] ~ [[a4,c5,e5] ~ ~ ~ [a4,c5,e5] ~ ~ [a4,c5,e5] [a4,c5,e5] ~@7] [[g4,b4,d5] ~ ~ ~ [g4,b4,d5] ~ ~ [g4,b4,d5] [g4,b4,d5] ~@7]>"),
+  note("<[[f5,a5,c6] ~@15] ~ [[a5,c6,e6] ~ ~ ~ [a5,c6,e6] ~ ~ [a5,c6,e6] [a5,c6,e6] ~@7] [[g5,b5,d6] ~ ~ ~ [g5,b5,d6] ~ ~ [g5,b5,d6] [g5,b5,d6] ~@7]>")
+).sound("piano").gain(.8).clip(.5).release(.7).room(.8).size(7).color("cyan")
+
+// RUNS
+$: stack(
+  note("<[d5 ~@11] ~ ~ [~@6 c6 b5 a5 g5 f5 e5]>").gain(.9),
+
+  note("<[d6 ~@11] ~ ~ [~@6 c7 b6 a6 g6 f6 e6]>").gain(.7)
+).sound("piano").clip(.5).release(.4).delay(".2:.15:.4").room(.3).size(5).color("white")
+
+// DRUMS
+$: s("bd").struct("t ~ ~ ~ ~ ~ ~ ~ ~ ~ t ~ ~ ~ ~ ~").bank("RolandTR909").gain(0.2).shape(0.4).release(1).room(.1).color("red")._orbit({ size: 150 })
+$: s("sd").struct("~ ~ ~ ~ t ~ ~ ~ ~ ~ ~ ~ t ~ ~ ~").bank("RolandTR909").gain(0.5).room(.2).size(2).color("yellow")
+$: s("hh*8").gain("[.25 .35]*4").clip(sine.range(.04,.06).fast(2)).shape(.1).color("lime")
