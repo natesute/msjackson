@@ -1,59 +1,15 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  background: #1e1e1e;
-  color: #ccc;
-  font-family: system-ui, sans-serif;
+  background: #0a0e14;
+  color: #b3b1ad;
   height: 100vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-#toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: #252526;
-  border-bottom: 1px solid #1a1a1a;
-  flex-shrink: 0;
-  z-index: 10;
-}
-
-#toolbar button {
-  color: #fff;
-  border: none;
-  padding: 5px 14px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 12px;
-  font-family: system-ui;
-}
-#play-btn { background: #0e639c; }
-#play-btn:hover { background: #1177bb; }
-#update-btn { background: #388e3c; }
-#update-btn:hover { background: #45a049; }
-#stop-btn { background: #a1260d; }
-#stop-btn:hover { background: #c53; }
-
-#toolbar kbd {
-  font-size: 10px;
-  color: #888;
-  background: #333;
-  padding: 2px 6px;
-  border-radius: 3px;
-  border: 1px solid #555;
-}
-
-#status {
-  font-size: 11px;
-  color: #888;
-  margin-left: auto;
-}
-#status.playing { color: #4caf50; }
-#status.error { color: #f44; }
-
+/* ── Main layout ──────────────────────────────────────── */
 #main {
   flex: 1;
   display: flex;
@@ -61,34 +17,136 @@ body {
   position: relative;
 }
 
-#editor {
+#editors-container {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.editor-panel {
   flex: 1;
   min-height: 0;
   overflow: hidden;
   position: relative;
+  background: transparent !important;
 }
 
-/* CodeMirror fills the editor div */
-#editor .cm-editor {
-  height: 100% !important;
+.editor-panel + .editor-panel {
+  border-left: 1px solid #1a1f29;
 }
-#editor .cm-scroller {
+
+/* ── CodeMirror overrides ─────────────────────────────── */
+.editor-panel .cm-editor,
+.editor-panel .cm-editor[class] {
+  height: 100% !important;
+  background: transparent !important;
+  background-color: transparent !important;
+}
+.editor-panel .cm-scroller {
   overflow: auto !important;
 }
-#editor .cm-focused {
+.editor-panel .cm-focused {
   outline: none !important;
 }
-#editor .cm-content {
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', monospace;
+.editor-panel .cm-content {
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', monospace;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.7;
+  caret-color: #e6b450;
 }
-#editor .cm-gutters {
-  background: #1e1e1e;
-  border-right: 1px solid #333;
+.editor-panel .cm-cursor {
+  border-left-color: #e6b450 !important;
+  border-left-width: 2px !important;
+  visibility: visible !important;
+}
+.editor-panel .cm-gutters {
+  background: transparent !important;
+  border-right: none !important;
+  color: #3d4455;
+  font-size: 12px;
+  min-width: 3em;
+}
+.editor-panel .cm-activeLineGutter {
+  background: transparent !important;
+  color: #6c7380;
+}
+.editor-panel .cm-activeLine {
+  background: rgba(255, 255, 255, 0.03) !important;
+}
+.editor-panel .cm-selectionBackground {
+  background: rgba(230, 180, 80, 0.15) !important;
+}
+.editor-panel .cm-line {
+  padding-left: 4px;
 }
 
-/* Visualization canvas overlays the editor */
+
+/* ── Dirty line (edited, not yet evaluated) ───────────── */
+.cm-dirty-line {
+  border-left: 2px solid #e6b45066;
+  background: rgba(230, 180, 80, 0.04);
+}
+
+/* ── Statusline (neovim-style) ────────────────────────── */
+#statusline {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0 8px;
+  height: 22px;
+  background: #0d1117;
+  border-top: 1px solid #1a1f29;
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+  font-size: 11px;
+  color: #3d4455;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+#mode {
+  font-weight: bold;
+  padding: 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 10px;
+}
+#mode.playing {
+  color: #0a0e14;
+  background: #7ee787;
+}
+#mode.stopped {
+  color: #8b949e;
+  background: transparent;
+}
+
+.sep {
+  color: #21262d;
+  padding: 0 6px;
+}
+
+#info {
+  color: #484f58;
+}
+
+#dirty-count {
+  color: #e6b450;
+  font-size: 10px;
+}
+
+.right {
+  margin-left: auto;
+  display: flex;
+  gap: 12px;
+}
+
+.hint {
+  color: #2d333b;
+  font-size: 10px;
+}
+
+/* ── Visualization canvas ─────────────────────────────── */
 #viz {
   position: absolute;
   top: 0;
@@ -97,4 +155,31 @@ body {
   height: 100%;
   pointer-events: none;
   z-index: 1;
+}
+
+/* ── Ripple overlay (covers #main, behind editors) ───── */
+#ripple-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+  overflow: visible;
+}
+
+.ripple {
+  position: absolute;
+  border-radius: 50%;
+  border: solid currentColor;
+  pointer-events: none;
+  transform: scale(0);
+  animation: ripple-expand 0.6s linear forwards;
+}
+
+@keyframes ripple-expand {
+  0%   { transform: scale(0); opacity: 0.8; }
+  40%  { transform: scale(0.4); opacity: 0.6; }
+  100% { transform: scale(1); opacity: 0; }
 }

@@ -2,20 +2,30 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Strudel IDE</title>
+  <title>strudel</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="toolbar">
-    <button id="play-btn">&#9654; Play</button>
-    <button id="update-btn">&#10227; Update Live</button>
-    <button id="stop-btn">&#9632; Stop</button>
-    <kbd>Ctrl+Enter</kbd>
-    <span id="status">Loading Strudel...</span>
-  </div>
   <div id="main">
-    <div id="editor"></div>
+    <div id="editors-container">
+      <div id="editor" class="editor-panel"></div>
+    </div>
     <canvas id="viz"></canvas>
+  </div>
+  <div id="statusline">
+    <span id="mode">STOPPED</span>
+    <span class="sep">|</span>
+    <span id="info">col:1</span>
+    <span class="sep">|</span>
+    <span id="dirty-count"></span>
+    <span class="right">
+      <span class="hint">C-enter eval</span>
+      <span class="hint">C-u update</span>
+      <span class="hint">C-. stop</span>
+      <span class="hint">C-m mute</span>
+      <span class="hint">C-w wrap</span>
+      <span class="hint">C-1/2/3 cols</span>
+    </span>
   </div>
   <script type="module" src="main.js"></script>
 </body>
