@@ -650,6 +650,9 @@ const secHighlightField = StateField.define({
   provide: (f) => EditorView.decorations.from(f),
 });
 
+/* ── Note onset flash (white outline on first frame) ────── */
+const activeHapIds = new Set();
+
 /* ── Dirty-line tracking ────────────────────────────────── */
 const clearDirtyLines = StateEffect.define();
 const dirtyLineDeco = Decoration.line({ class: 'cm-dirty-line' });
@@ -1150,7 +1153,34 @@ const RIPPLE_INTERVAL = 150; // ms between ripples for held notes
 
 const _origHighlight = editor.highlight.bind(editor);
 editor.highlight = function (haps, time) {
-  _origHighlight(haps, time);
+  // On first frame of a hap, override its outline to white, then let normal color take over
+  const currentIds = new Set();
+  const onsetHaps = [];
+  for (const hap of haps) {
+    if (!hap.context?.locations || !hap.whole) continue;
+    const uid = `${hap.whole.begin}:${hap.whole.end}`;
+    currentIds.add(uid);
+    if (!activeHapIds.has(uid)) {
+      activeHapIds.add(uid);
+      onsetHaps.push(hap);
+    }
+  }
+  for (const uid of activeHapIds) {
+    if (!currentIds.has(uid)) activeHapIds.delete(uid);
+  }
+
+  if (onsetHaps.length > 0) {
+    // First call: pass onset haps with white outline
+    const whiteHaps = onsetHaps.map(h => ({
+      ...h,
+      value: { ...h.value, color: '#ffffff', markcss: 'outline: solid 2px #ffffff' },
+    }));
+    _origHighlight(whiteHaps, time);
+    // Next frame: re-highlight with real colors
+    requestAnimationFrame(() => _origHighlight(haps, time));
+  } else {
+    _origHighlight(haps, time);
+  }
 
   // Distribute highlights to secondary editors
   if (currentCols > 1 && secondaryEditors.length > 0) {
@@ -1174,6 +1204,7 @@ editor.highlight = function (haps, time) {
       try {
         sec.view.dispatch({ effects: setSecHighlights.of(Decoration.set(marks, true)) });
       } catch (_) {}
+
     }
   }
 
